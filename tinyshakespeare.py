@@ -9,7 +9,7 @@ from src.loss import CELoss
 from src.optim import AdamOptimizer, WarmupCosineScheduler
 from src.tensor import Tensor
 
-DATA_FILE = 'tinyshakespeare.txt'
+DATA_FILE  = 'tinyshakespeare.txt'
 MODEL_FILE = 'tinyshakespeare.npz'
 
 
@@ -21,6 +21,24 @@ def download_dataset():
 
 
 class LLMDataset(Dataset):
+    """
+    Character-level language modelling dataset built from a plain text file.
+
+    TOKENISATION:
+      We use the simplest possible tokeniser: every unique character in
+      the corpus is a token.  For Tiny Shakespeare this gives a
+      vocabulary of ~65 characters.  Production LLMs use subword
+      tokenisers (BPE / SentencePiece) to balance vocabulary size with
+      coverage, but character-level is sufficient for demonstration.
+
+    SLIDING WINDOW SAMPLES:
+      Each training example is a pair (x, y) where:
+        x = tokens[i : i+context_size]
+        y = tokens[i+1 : i+context_size+1]   (x shifted right by 1)
+      The model is trained to predict y[t] given x[0..t] at every
+      position t simultaneously — this is the "next-token prediction"
+      objective.  stride controls how much consecutive windows overlap.
+    """
 
     def __init__(self, filename, context_size=64, stride=None, train_split=0.9):
         self.filename = filename
@@ -29,12 +47,12 @@ class LLMDataset(Dataset):
         self.train_split = train_split
 
         self.vocabulary = []
-        self.stoi = {}
-        self.itos = {}
+        self.stoi = {}   # character → integer index
+        self.itos = {}   # integer index → character
         self.tokens = []
 
         self.train_tokens = []
-        self.eval_tokens = []
+        self.eval_tokens  = []
         super().__init__(batch_size=1)
 
     def load(self):
@@ -48,7 +66,7 @@ class LLMDataset(Dataset):
 
         split = int(len(self.tokens) * self.train_split)
         self.train_tokens = self.tokens[:split]
-        self.eval_tokens = self.tokens[split:]
+        self.eval_tokens  = self.tokens[split:]
 
     @property
     def vocab_size(self):
@@ -58,26 +76,27 @@ class LLMDataset(Dataset):
         features = []
         s = self.context_size
         for i in range(0, len(tokens) - s - 1, self.stride):
-            x = tokens[i: i + s]
-            y = tokens[i + 1: i + s + 1]
+            x = tokens[i     : i + s]
+            y = tokens[i + 1 : i + s + 1]
             features.append((x, y))
         return features
 
     def train(self):
         self.train_features = self._build_samples(self.train_tokens)
         self.features = self.train_features
-        self.labels = None
+        self.labels   = None
 
     def eval(self):
         self.test_features = self._build_samples(self.eval_tokens)
         self.features = self.test_features
-        self.labels = None
+        self.labels   = None
 
     def __len__(self):
         return len(self.features)
 
     def __getitem__(self, index):
         x, y = self.features[index]
+        # y is returned as a one-hot matrix (T, vocab_size) for CELoss.
         return Tensor(x), Tensor(self.onehot(y))
 
     def shape(self):
@@ -99,6 +118,7 @@ class LLMDataset(Dataset):
         return int(np.argmax(vector))
 
     def estimate(self, predictions):
+        """Next-character accuracy: fraction of last-position predictions correct."""
         count = 0
         for i in range(len(predictions)):
             prediction = self.argmax(predictions[i].data[-1])
@@ -110,6 +130,18 @@ class LLMDataset(Dataset):
 
 
 class Model:
+    """
+    Training loop wrapper.
+
+    Training order:
+      1. Sample a random batch index from the shuffled order.
+      2. (Optional) Update the learning rate from the scheduler.
+      3. Forward pass: compute logits from the input sequence.
+      4. Compute loss.
+      5. Zero gradients (reset), then backward to accumulate them.
+      6. Clip gradient norm to prevent exploding gradients.
+      7. Optimizer step to update parameters.
+    """
 
     def __init__(self, layer, loss, optimizer):
         self.layer = layer
@@ -123,7 +155,7 @@ class Model:
         order = list(range(len(dataset)))
 
         for epoch in range(epochs):
-            np.random.shuffle(order)
+            np.random.shuffle(order)   # shuffle each epoch
             loss = 0.0
 
             for step, i in enumerate(order):
@@ -134,7 +166,7 @@ class Model:
                 prediction = self.layer(feature)
                 error = self.loss(prediction, label)
 
-                self.optimizer.reset()
+                self.optimizer.reset()   # zero gradients before backward
                 error.backward()
                 loss += float(error.data)
                 self.optimizer.clip_grad_norm()
@@ -158,18 +190,23 @@ class Model:
         return predictions
 
 
-CONTEXT_SIZE = 128
-EMBEDDING_SIZE = 256
-HEADS = 8
-LAYERS = 8
-FFN_HIDDEN = 512
-DROPOUT = 0.1
+# ------------------------------------------------------------------
+# Hyperparameters
+# These are scaled-down versions of GPT-3 settings.
+# GPT-3 small: 12 layers, 12 heads, embedding 768, ffn 3072.
+# ------------------------------------------------------------------
+CONTEXT_SIZE    = 128
+EMBEDDING_SIZE  = 256
+HEADS           = 8
+LAYERS          = 8
+FFN_HIDDEN      = 512
+DROPOUT         = 0.1
 
 MAX_LEARNING_RATE = 3e-4
 MIN_LEARNING_RATE = 3e-5
-WEIGHT_DECAY = 0.01
-WARMUP_STEPS = 300
-EPOCHS = 15
+WEIGHT_DECAY      = 0.01
+WARMUP_STEPS      = 300
+EPOCHS            = 5
 
 
 def save_model(path, layer, config):
@@ -189,22 +226,48 @@ def load_model(path):
 
 
 def generate(layer, dataset, prompt, new_tokens=200, temperature=0.7, top_k=20):
+    """
+    Autoregressive text generation.
+
+    At each step:
+      1. Take the last context_size tokens as input.
+      2. Run a forward pass to get logits over the vocabulary.
+      3. Look only at the logits for the LAST position (next token).
+      4. Apply temperature and top-k, then sample.
+
+    TEMPERATURE:
+      Dividing logits by temperature T before softmax controls
+      "sharpness".  T < 1 makes the distribution peakier (more
+      deterministic / repetitive).  T > 1 makes it flatter (more
+      random / creative).  T = 1 is the raw model distribution.
+
+    TOP-K SAMPLING:
+      Zero out all logits except the k highest before softmax.
+      This prevents the model from sampling very unlikely tokens
+      while still preserving diversity among the top candidates.
+      Without top-k, even a tiny probability on a bad token can
+      occasionally be sampled.
+    """
     tokens = dataset.encode(prompt)
     context_size = dataset.context_size
 
     layer.eval()
     for _ in range(new_tokens):
-        window = tokens[-context_size:]
+        window = tokens[-context_size:]    # truncate to context window
         feature = Tensor(window)
         logits = layer.forward(feature)
+
+        # Take last-position logits and apply temperature scaling.
         last_logits = logits.data[-1, :].astype(np.float64) / max(temperature, 1e-8)
 
+        # Top-k filtering: mask out everything outside the top k.
         if top_k is not None:
             k = min(top_k, last_logits.shape[-1])
             threshold = np.partition(last_logits, -k)[-k]
             last_logits[last_logits < threshold] = -np.inf
 
-        exp = np.exp(last_logits - np.max(last_logits))
+        # Stable softmax, then multinomial sample.
+        exp   = np.exp(last_logits - np.max(last_logits))
         probs = exp / np.sum(exp)
 
         token = np.random.choice(len(probs), p=probs)
@@ -230,7 +293,7 @@ def main():
     num_params = sum(p.data.size for p in layer.parameters())
     print(f"parameters={num_params}")
 
-    loss_fn = CELoss()
+    loss_fn   = CELoss()
     optimizer = AdamOptimizer(layer.parameters(), lr=MAX_LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     total_steps = EPOCHS * len(dataset.train_features)
