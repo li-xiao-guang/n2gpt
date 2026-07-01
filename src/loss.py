@@ -25,7 +25,7 @@ class CELoss(Loss):
         ce = Tensor(0 - np.sum(y.data * log) / len(y.data))
 
         def gradient_fn():
-            p.grad += (softmax - y.data) / len(y.data)
+            p.grad += ce.grad * (softmax - y.data) / len(y.data)
 
         ce.gradient_fn = gradient_fn
         ce.parents = {p}

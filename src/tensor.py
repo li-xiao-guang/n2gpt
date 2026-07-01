@@ -44,7 +44,7 @@ class Tensor:
             self.grad += self._unbroadcast(p.grad, self.data.shape)
             other.grad += self._unbroadcast(p.grad, other.data.shape)
 
-        return p.update(gradient_fn, {self, other})
+        return p.attach_grad_fn(gradient_fn, {self, other})
 
     def __sub__(self, other):
         p = Tensor(self.data - other.data)
@@ -53,7 +53,7 @@ class Tensor:
             self.grad += self._unbroadcast(p.grad, self.data.shape)
             other.grad += self._unbroadcast(-p.grad, other.data.shape)
 
-        return p.update(gradient_fn, {self, other})
+        return p.attach_grad_fn(gradient_fn, {self, other})
 
     def __mul__(self, other):
         p = Tensor(self.data * other.data)
@@ -62,7 +62,7 @@ class Tensor:
             self.grad += self._unbroadcast(p.grad * other.data, self.data.shape)
             other.grad += self._unbroadcast(p.grad * self.data, other.data.shape)
 
-        return p.update(gradient_fn, {self, other})
+        return p.attach_grad_fn(gradient_fn, {self, other})
 
     def __truediv__(self, other):
         p = Tensor(self.data / other.data)
@@ -71,7 +71,7 @@ class Tensor:
             self.grad += self._unbroadcast(p.grad / other.data, self.data.shape)
             other.grad += self._unbroadcast(-p.grad * self.data / (other.data ** 2), other.data.shape)
 
-        return p.update(gradient_fn, {self, other})
+        return p.attach_grad_fn(gradient_fn, {self, other})
 
     def __matmul__(self, other):
         p = Tensor(np.matmul(self.data, other.data))
@@ -80,7 +80,7 @@ class Tensor:
             self.grad += np.matmul(p.grad, other.data.swapaxes(-1, -2))
             other.grad += np.matmul(self.data.swapaxes(-1, -2), p.grad)
 
-        return p.update(gradient_fn, {self, other})
+        return p.attach_grad_fn(gradient_fn, {self, other})
 
     def transpose(self, axes=None):
         p = Tensor(np.transpose(self.data, axes))
@@ -92,7 +92,7 @@ class Tensor:
                 idx = np.argsort(axes)
                 self.grad += np.transpose(p.grad, idx)
 
-        return p.update(gradient_fn, {self})
+        return p.attach_grad_fn(gradient_fn, {self})
 
     @property
     def T(self):
@@ -106,7 +106,7 @@ class Tensor:
             self.grad += grad[0]
             other.grad += grad[1]
 
-        return p.update(gradient_fn, {self, other})
+        return p.attach_grad_fn(gradient_fn, {self, other})
 
     def reshape(self, shape):
         p = Tensor(np.reshape(self.data, shape))
@@ -114,9 +114,9 @@ class Tensor:
         def gradient_fn():
             self.grad += np.reshape(p.grad, self.data.shape)
 
-        return p.update(gradient_fn, {self})
+        return p.attach_grad_fn(gradient_fn, {self})
 
-    def update(self, gradient_fn, parents):
+    def attach_grad_fn(self, gradient_fn, parents):
         self.gradient_fn = gradient_fn
         self.parents = parents
         return self

@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import requests
 
@@ -8,6 +10,7 @@ from src.optim import AdamOptimizer, WarmupCosineScheduler
 from src.tensor import Tensor
 
 DATA_FILE = 'tinyshakespeare.txt'
+MODEL_FILE = 'tinyshakespeare.npz'
 
 
 def download_dataset():
@@ -169,6 +172,22 @@ WARMUP_STEPS = 300
 EPOCHS = 15
 
 
+def save_model(path, layer, config):
+    params = {f"param_{i}": p.data for i, p in enumerate(layer.parameters())}
+    np.savez(path, config=json.dumps(config), **params)
+    print(f"saved model to {path} ({len(params)} parameter tensors)")
+
+
+def load_model(path):
+    data = np.load(path, allow_pickle=False)
+    config = json.loads(str(data['config']))
+    layer = GPT(**config)
+    for i, p in enumerate(layer.parameters()):
+        p.data = data[f"param_{i}"].astype(p.data.dtype)
+        p.grad = np.zeros_like(p.data)
+    return layer, config
+
+
 def generate(layer, dataset, prompt, new_tokens=200, temperature=0.7, top_k=20):
     tokens = dataset.encode(prompt)
     context_size = dataset.context_size
@@ -198,7 +217,7 @@ def main():
     dataset = LLMDataset(DATA_FILE, context_size=CONTEXT_SIZE)
     print(f"vocab_size={dataset.vocab_size} train_samples={len(dataset.train_features)}")
 
-    layer = GPT(
+    config = dict(
         vocabulary_size=dataset.vocab_size,
         context_size=CONTEXT_SIZE,
         embedding_size=EMBEDDING_SIZE,
@@ -207,6 +226,7 @@ def main():
         ffn_hidden=FFN_HIDDEN,
         dropout=DROPOUT
     )
+    layer = GPT(**config)
     num_params = sum(p.data.size for p in layer.parameters())
     print(f"parameters={num_params}")
 
@@ -223,6 +243,8 @@ def main():
 
     model = Model(layer, loss_fn, optimizer)
     model.train(dataset, EPOCHS, scheduler=scheduler)
+
+    save_model(MODEL_FILE, layer, config)
 
     predictions = model.test(dataset)
     print(f"Accuracy: {dataset.estimate(predictions):.3f}")

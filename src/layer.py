@@ -72,7 +72,7 @@ class Linear(Layer):
             self.bias.grad += np.sum(p.grad, axis=0)
             x.grad += p.grad @ self.weight.data
 
-        return p.update(gradient_fn, {self.weight, self.bias, x})
+        return p.attach_grad_fn(gradient_fn, {self.weight, self.bias, x})
 
     def parameters(self):
         return [self.weight, self.bias]
@@ -90,12 +90,12 @@ class Embedding(Layer):
         self.axis = axis
 
         self.weight = Tensor(
-            np.random.randn(embedding_size, vocabulary_size).astype(DTYPE) * np.sqrt(2 / vocabulary_size)
+            np.random.randn(vocabulary_size, embedding_size).astype(DTYPE) * np.sqrt(2 / vocabulary_size)
         )
 
     def forward(self, x: Tensor):
         token_ids = x.data.astype(np.int64)
-        weights = self.weight.data.T[token_ids]
+        weights = self.weight.data[token_ids]      
         p = Tensor(np.sum(weights, axis=self.axis) if self.axis is not None else weights)
 
         def gradient_fn():
@@ -104,9 +104,9 @@ class Embedding(Layer):
                 grad = np.expand_dims(grad, axis=self.axis)
                 grad = np.broadcast_to(grad, weights.shape)
 
-            np.add.at(self.weight.grad.T, token_ids, grad)
+            np.add.at(self.weight.grad, token_ids, grad)
 
-        return p.update(gradient_fn, {self.weight})
+        return p.attach_grad_fn(gradient_fn, {self.weight})
 
     def parameters(self):
         return [self.weight]
@@ -129,7 +129,7 @@ class Dropout(Layer):
         def gradient_fn():
             x.grad += p.grad * mask
 
-        return p.update(gradient_fn, {x})
+        return p.attach_grad_fn(gradient_fn, {x})
 
 
 class Normalize(Layer):
@@ -158,7 +158,7 @@ class Normalize(Layer):
             norm_mean = np.mean(grad * norm, axis=-1, keepdims=True)
             x.grad += (grad - grad_mean - norm * norm_mean) / np.sqrt(var + self.eps)
 
-        return p.update(gradient_fn, {self.scale, self.shift, x})
+        return p.attach_grad_fn(gradient_fn, {self.scale, self.shift, x})
 
     def parameters(self):
         return [self.scale, self.shift]

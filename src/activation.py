@@ -12,7 +12,24 @@ class ReLU(Layer):
         def gradient_fn():
             x.grad += (p.data > 0) * p.grad
 
-        return p.update(gradient_fn, {x})
+        return p.attach_grad_fn(gradient_fn, {x})
+
+
+class GeLU(Layer):
+
+    def forward(self, x: Tensor):
+        k = np.sqrt(2.0 / np.pi)
+        inner = k * (x.data + 0.044715 * x.data ** 3)
+        tanh_val = np.tanh(inner)
+        cdf = 0.5 * (1.0 + tanh_val)
+        p = Tensor(x.data * cdf)
+
+        def gradient_fn():
+            sech2 = 1.0 - tanh_val ** 2
+            dcdf = 0.5 * sech2 * k * (1.0 + 3.0 * 0.044715 * x.data ** 2)
+            x.grad += p.grad * (cdf + x.data * dcdf)
+
+        return p.attach_grad_fn(gradient_fn, {x})
 
 
 class Softmax(Layer):
@@ -29,7 +46,7 @@ class Softmax(Layer):
             grad = np.sum(p.data * p.grad, axis=self.axis, keepdims=True)
             x.grad += p.data * (p.grad - grad)
 
-        return p.update(gradient_fn, {x})
+        return p.attach_grad_fn(gradient_fn, {x})
 
 
 class Triu(Layer):
@@ -40,11 +57,9 @@ class Triu(Layer):
 
     def forward(self, x: Tensor):
         keep = np.tril(np.ones((x.data.shape[-2], x.data.shape[-1]), dtype=DTYPE))
-
-        p = Tensor(x.data)
-        p.data = np.where(keep == 1, p.data, np.array(self.value, dtype=DTYPE))
+        p = Tensor(np.where(keep == 1, x.data, np.array(self.value, dtype=DTYPE)))
 
         def gradient_fn():
             x.grad += p.grad * keep
 
-        return p.update(gradient_fn, {x})
+        return p.attach_grad_fn(gradient_fn, {x})

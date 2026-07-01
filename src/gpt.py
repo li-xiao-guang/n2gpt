@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.activation import Triu, Softmax, ReLU
+from src.activation import Triu, Softmax, GeLU
 from src.layer import Sequential, Embedding, Dropout, Normalize, Linear
 from src.tensor import Tensor
 
@@ -93,16 +93,16 @@ class GPTFeedForward(Sequential):
 
         self.normalize = Normalize(self.embedding_size)
         self.input = Linear(self.embedding_size, self.ffn_hidden)
-        self.relu = ReLU()
+        self.gelu = GeLU()
         self.output = Linear(self.ffn_hidden, self.embedding_size)
         self.dropout = Dropout(dropout)
 
-        layers = [self.normalize, self.input, self.relu, self.output, self.dropout]
+        layers = [self.normalize, self.input, self.gelu, self.output, self.dropout]
         super().__init__(layers)
 
     def forward(self, x: Tensor):
         norm = self.normalize(x)
-        hidden = self.relu(self.input(norm))
+        hidden = self.gelu(self.input(norm))
         return x + self.dropout(self.output(hidden))
 
 
@@ -161,6 +161,17 @@ class GPT(Sequential):
 
         all_layers = [self.embedding] + self.transformers + [self.output]
         super().__init__(all_layers)
+
+        self.output.output.weight = self.embedding.token_embedding.weight
+
+    def parameters(self):
+        seen = set()
+        unique = []
+        for p in super().parameters():
+            if id(p) not in seen:
+                seen.add(id(p))
+                unique.append(p)
+        return unique
 
     def forward(self, x: Tensor):
         x = self.embedding(x)
